@@ -100,9 +100,16 @@ export class CustomerService {
 
   getCustomerById(id: string): Observable<Customer | null> {
     // Backend identifies customers by SSN; components pass id from mock user
-    // We try by SSN first, else null
+    // Fetch customer, then ALWAYS hydrate balance from account-service if accountNo exists
     return this.http.get<any>(`${this.baseUrl}/customers/${id}`).pipe(
       map(c => (c ? this.mapBackendCustomer(c) : null)),
+      switchMap((cust) => {
+        if (!cust || !cust.accountNo) return of(cust);
+        return this.http.get<{ balance: number }>(`${this.baseUrl}/accounts/${cust.accountNo}/balance`).pipe(
+          map((res) => ({ ...cust, balance: typeof res.balance === 'number' ? res.balance : cust.balance } as Customer)),
+          catchError(() => of(cust))
+        );
+      }),
       catchError(() => of(null))
     );
   }
@@ -275,10 +282,15 @@ export class CustomerService {
         const url = `${this.baseUrl}/accounts/${cust.accountNo}/deposit`;
         const body = { amount };
         return this.http.post<any>(url, body).pipe(
-          map((tx: any) => {
-            const normalized = this.mapBackendTransaction(tx);
-            const newBalance = normalized.balance || (cust.balance + amount);
-            const updatedCustomer = { ...cust, balance: newBalance } as Customer;
+          map((tx: any) => this.mapBackendTransaction(tx)),
+          switchMap((normalized) =>
+            this.http.get<{balance: number}>(`${this.baseUrl}/accounts/${cust.accountNo}/balance`).pipe(
+              map(res => ({ normalized, latestBalance: typeof res.balance === 'number' ? res.balance : (cust.balance + amount) })),
+              catchError(() => of({ normalized, latestBalance: (cust.balance + amount) }))
+            )
+          ),
+          map(({ normalized, latestBalance }) => {
+            const updatedCustomer = { ...cust, balance: latestBalance } as Customer;
             this.patchCustomer(updatedCustomer);
             return { customer: updatedCustomer, transaction: normalized };
           })
@@ -297,10 +309,15 @@ export class CustomerService {
         const url = `${this.baseUrl}/accounts/${cust.accountNo}/withdraw`;
         const body = { amount };
         return this.http.post<any>(url, body).pipe(
-          map((tx: any) => {
-            const normalized = this.mapBackendTransaction(tx);
-            const newBalance = normalized.balance || (cust.balance - amount);
-            const updatedCustomer = { ...cust, balance: newBalance } as Customer;
+          map((tx: any) => this.mapBackendTransaction(tx)),
+          switchMap((normalized) =>
+            this.http.get<{balance: number}>(`${this.baseUrl}/accounts/${cust.accountNo}/balance`).pipe(
+              map(res => ({ normalized, latestBalance: typeof res.balance === 'number' ? res.balance : (cust.balance - amount) })),
+              catchError(() => of({ normalized, latestBalance: (cust.balance - amount) }))
+            )
+          ),
+          map(({ normalized, latestBalance }) => {
+            const updatedCustomer = { ...cust, balance: latestBalance } as Customer;
             this.patchCustomer(updatedCustomer);
             return { customer: updatedCustomer, transaction: normalized };
           })
@@ -319,10 +336,15 @@ export class CustomerService {
         const url = `${this.baseUrl}/accounts/transfer`;
         const body = { sourceAccount: fromCust.accountNo, destinationAccount: toAccountNo, amount };
         return this.http.post<any>(url, body).pipe(
-          map((tx: any) => {
-            const normalized = this.mapBackendTransaction(tx);
-            const newBalance = normalized.balance || (fromCust.balance - amount);
-            const updatedCustomer = { ...fromCust, balance: newBalance } as Customer;
+          map((tx: any) => this.mapBackendTransaction(tx)),
+          switchMap((normalized) =>
+            this.http.get<{balance: number}>(`${this.baseUrl}/accounts/${fromCust.accountNo}/balance`).pipe(
+              map(res => ({ normalized, latestBalance: typeof res.balance === 'number' ? res.balance : (fromCust.balance - amount) })),
+              catchError(() => of({ normalized, latestBalance: (fromCust.balance - amount) }))
+            )
+          ),
+          map(({ normalized, latestBalance }) => {
+            const updatedCustomer = { ...fromCust, balance: latestBalance } as Customer;
             this.patchCustomer(updatedCustomer);
             return { fromCustomer: updatedCustomer, transaction: normalized };
           })
@@ -337,18 +359,44 @@ export class CustomerService {
         if (!cust || !cust.accountNo) {
           return of({ transactions: [], total: 0 });
         }
-        const url = `${this.baseUrl}/accounts/${cust.accountNo}/transactions`;
+        const accountNo = cust.accountNo;
+        const url = `${this.baseUrl}/accounts/${accountNo}/transactions`;
 
-        const paginate = (txs: any[]) => {
-          const normalized = (txs || []).map(t => this.mapBackendTransaction(t));
-          const startIndex = (page - 1) * pageSize;
-          const endIndex = startIndex + pageSize;
-          const slice = normalized.slice(startIndex, endIndex) as Transaction[];
-          return { transactions: slice, total: normalized.length };
-        };
+        return forkJoin({
+          txs: this.http.get<any[]>(url).pipe(catchError(() => of([]))),
+          bal: this.http.get<{balance: number}>(`${this.baseUrl}/accounts/${accountNo}/balance`).pipe(
+            catchError(() => of({ balance: 0 }))
+          )
+        }).pipe(
+          map(({ txs, bal }) => {
+            const normalized = (txs || []).map(t => this.mapBackendTransaction(t));
+            // Ensure newest first (desc) by timestamp
+            const sorted = [...normalized].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-        return this.http.get<any[]>(url).pipe(
-          map(paginate),
+            // Compute running balances from current balance backwards
+            let running = typeof bal.balance === 'number' ? bal.balance : 0;
+            const withBalances = sorted.map((tx) => {
+              const signedDelta = (() => {
+                if (tx.type === 'deposit') return +tx.amount;
+                if (tx.type === 'withdraw') return -tx.amount;
+                // transfer: sign depends on direction relative to this account
+                if (tx.type === 'transfer') {
+                  if (tx.fromAccountNo && tx.fromAccountNo === accountNo) return -tx.amount;
+                  if (tx.toAccountNo && tx.toAccountNo === accountNo) return +tx.amount;
+                }
+                return 0;
+              })();
+              const txWithBal: Transaction = { ...tx, balance: running };
+              // Move running balance backwards for the next (older) transaction
+              running = running - signedDelta;
+              return txWithBal;
+            });
+
+            const startIndex = (page - 1) * pageSize;
+            const endIndex = startIndex + pageSize;
+            const slice = withBalances.slice(startIndex, endIndex) as Transaction[];
+            return { transactions: slice, total: withBalances.length };
+          }),
           catchError(() => of({ transactions: [], total: 0 }))
         );
       }),

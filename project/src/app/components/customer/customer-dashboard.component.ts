@@ -686,9 +686,25 @@ export class CustomerDashboardComponent implements OnInit {
         next: (result) => {
           this.isLoading = false;
           this.customer = result.customer;
+          // Persist new balance to auth user so refresh doesn't revert
+          if (this.customer) {
+            this.authService.updateCurrentUser({ balance: this.customer.balance });
+            const fallbackBalance = this.customer.balance;
+            // Force-refresh from account-service for authoritative value
+            this.customerService.refreshCustomerBalance(this.customer.id).subscribe((updated) => {
+              if (updated) {
+                this.customer = updated;
+                this.authService.updateCurrentUser({ balance: updated.balance });
+                this.notificationService.showSuccess(`Successfully deposited ₹${amount}. New balance: ₹${updated.balance.toFixed(2)}`);
+              } else {
+                this.notificationService.showSuccess(`Successfully deposited ₹${amount}. New balance: ₹${fallbackBalance.toFixed(2)}`);
+              }
+            });
+          } else {
+            this.notificationService.showSuccess(`Successfully deposited ₹${amount}`);
+          }
           this.loadTransactions();
           this.hideDeposit();
-          this.notificationService.showSuccess(`Successfully deposited ₹${amount}`);
         },
         error: (error) => {
           this.isLoading = false;
@@ -707,9 +723,23 @@ export class CustomerDashboardComponent implements OnInit {
         next: (result) => {
           this.isLoading = false;
           this.customer = result.customer;
+          if (this.customer) {
+            this.authService.updateCurrentUser({ balance: this.customer.balance });
+            const fallbackBalance = this.customer.balance;
+            this.customerService.refreshCustomerBalance(this.customer.id).subscribe((updated) => {
+              if (updated) {
+                this.customer = updated;
+                this.authService.updateCurrentUser({ balance: updated.balance });
+                this.notificationService.showSuccess(`Successfully withdrew ₹${amount}. New balance: ₹${updated.balance.toFixed(2)}`);
+              } else {
+                this.notificationService.showSuccess(`Successfully withdrew ₹${amount}. New balance: ₹${fallbackBalance.toFixed(2)}`);
+              }
+            });
+          } else {
+            this.notificationService.showSuccess(`Successfully withdrew ₹${amount}`);
+          }
           this.loadTransactions();
           this.hideWithdraw();
-          this.notificationService.showSuccess(`Successfully withdrew ₹${amount}`);
         },
         error: (error) => {
           this.isLoading = false;
@@ -728,9 +758,23 @@ export class CustomerDashboardComponent implements OnInit {
         next: (result) => {
           this.isLoading = false;
           this.customer = result.fromCustomer;
+          if (this.customer) {
+            this.authService.updateCurrentUser({ balance: this.customer.balance });
+            const fallbackBalance = this.customer.balance;
+            this.customerService.refreshCustomerBalance(this.customer.id).subscribe((updated) => {
+              if (updated) {
+                this.customer = updated;
+                this.authService.updateCurrentUser({ balance: updated.balance });
+                this.notificationService.showSuccess(`Successfully transferred ₹${amount} to ${toAccountNo}. New balance: ₹${updated.balance.toFixed(2)}`);
+              } else {
+                this.notificationService.showSuccess(`Successfully transferred ₹${amount} to ${toAccountNo}. New balance: ₹${fallbackBalance.toFixed(2)}`);
+              }
+            });
+          } else {
+            this.notificationService.showSuccess(`Successfully transferred ₹${amount} to ${toAccountNo}`);
+          }
           this.loadTransactions();
           this.hideTransfer();
-          this.notificationService.showSuccess(`Successfully transferred ₹${amount} to ${toAccountNo}`);
         },
         error: (error) => {
           this.isLoading = false;

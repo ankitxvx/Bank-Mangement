@@ -413,9 +413,9 @@ import { Customer, Employee } from '../../models/user.model';
               <form [formGroup]="employeeForm">
                 <div class="grid grid-cols-2">
                   <div class="form-group">
-                    <label class="form-label">Employee ID *</label>
-          <input type="text" class="form-control" formControlName="empId" 
-            placeholder="EMP12345">
+                    <label class="form-label">Employee ID</label>
+                    <input type="text" class="form-control" formControlName="empId" 
+                           placeholder="Auto-generated on create" [readonly]="showEmployeeCreate">
                   </div>
                   <div class="form-group">
                     <label class="form-label">Email *</label>
@@ -435,16 +435,30 @@ import { Customer, Employee } from '../../models/user.model';
                   </div>
                 </div>
 
+                <div class="grid grid-cols-2">
+                  <div class="form-group">
+                    <label class="form-label">Contact Number *</label>
+                    <input type="tel" class="form-control" formControlName="contactNo" placeholder="9876543210">
+                    <div class="error-message" *ngIf="employeeForm.get('contactNo')?.invalid && employeeForm.get('contactNo')?.touched">
+                      Enter a valid 10-digit contact number
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Salary *</label>
+                    <input type="number" class="form-control" formControlName="salary" placeholder="45000" min="0" step="0.01">
+                    <div class="error-message" *ngIf="employeeForm.get('salary')?.invalid && employeeForm.get('salary')?.touched">
+                      Salary is required and must be >= 0
+                    </div>
+                  </div>
+                </div>
+
                 <div class="form-group">
-                  <label class="form-label">Department *</label>
+                  <label class="form-label">Department (Designation) *</label>
                   <select class="form-control" formControlName="department">
-                    <option value="">Select Department</option>
-                    <option value="Customer Service">Customer Service</option>
-                    <option value="Loan Department">Loan Department</option>
-                    <option value="Operations">Operations</option>
-                    <option value="IT">IT</option>
-                    <option value="HR">HR</option>
-                    <option value="Finance">Finance</option>
+                    <option value="">Select Designation</option>
+                    <option value="Clerk">Clerk</option>
+                    <option value="Manager">Manager</option>
+                    <option value="Accountant">Accountant</option>
                   </select>
                 </div>
 
@@ -792,11 +806,16 @@ export class ManagerDashboardComponent implements OnInit {
     });
 
     this.employeeForm = this.fb.group({
-      empId: ['', Validators.required],
+      // Backend-required fields
       firstName: ['', Validators.required],
       lastName: ['', Validators.required],
       email: ['', [Validators.required, Validators.email]],
+      contactNo: ['', [Validators.required, Validators.pattern(/^[0-9]{10}$/)]],
+      // Use 'department' in UI and map to designation in service
       department: ['', Validators.required],
+      salary: [null, [Validators.required, Validators.min(0)]],
+      // Optional UI fields
+      empId: [''],
       dateOfBirth: [''],
       address: [''],
       isActive: [true]
@@ -1103,6 +1122,8 @@ export class ManagerDashboardComponent implements OnInit {
       lastName: employee.lastName,
       email: employee.email,
       department: employee.department,
+      contactNo: (employee as any).contactNo || '',
+      salary: (employee as any).salary ?? null,
       dateOfBirth: employee.dateOfBirth ? this.formatDateForInput(employee.dateOfBirth) : '',
       address: employee.address,
       isActive: employee.isActive

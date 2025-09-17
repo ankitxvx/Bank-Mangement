@@ -25,11 +25,11 @@ export class AuthService {
       this.currentUserSubject.next(user);
       this.isLoggedInSubject.next(true);
       // Post-load enrichment for customer if name data is missing
-      if (user?.role === 'CUSTOMER' && !user.firstName) {
+      if (user?.role === 'CUSTOMER') {
         const ssn = user.ssn || user.id;
         if (ssn) {
           this.http.get<any>(`${this.baseUrl}/customers/${ssn}`).pipe(
-            map((customer) => {
+            switchMap((customer) => {
               const customerName: string | undefined = customer?.customerName;
               const [firstName, ...rest] = (customerName || '').split(' ');
               const mapped: any = {
@@ -47,8 +47,19 @@ export class AuthService {
                 city: customer?.city,
                 role: 'CUSTOMER'
               } as User;
-              localStorage.setItem('currentUser', JSON.stringify(mapped));
-              this.currentUserSubject.next(mapped);
+              // Hydrate balance from account-service if accountNo available
+              if (mapped.accountNo) {
+                return this.http.get<{balance: number}>(`${this.baseUrl}/accounts/${mapped.accountNo}/balance`).pipe(
+                  map((res) => ({ ...mapped, balance: typeof res.balance === 'number' ? res.balance : mapped.balance }) as User),
+                  catchError(() => of(mapped as User))
+                );
+              }
+              return of(mapped as User);
+            }),
+            map((finalUser) => {
+              localStorage.setItem('currentUser', JSON.stringify(finalUser));
+              this.currentUserSubject.next(finalUser);
+              return finalUser;
             })
           ).subscribe({ next: () => {}, error: () => {} });
         }
@@ -76,7 +87,7 @@ export class AuthService {
         if (role === 'CUSTOMER') {
           const ssn = loginRequest.identifier;
           return this.http.get<any>(`${this.baseUrl}/customers/${ssn}`).pipe(
-            map((customer) => {
+            switchMap((customer) => {
               // Map backend Customer entity fields to frontend expectations
               const customerName: string | undefined = customer?.customerName;
               const [firstName, ...rest] = (customerName || '').split(' ');
@@ -98,10 +109,19 @@ export class AuthService {
                 // keep role uppercase as enforced in the model
                 role: 'CUSTOMER'
               };
-              localStorage.setItem('currentUser', JSON.stringify(mapped));
-              this.currentUserSubject.next(mapped as User);
+              if (mapped.accountNo) {
+                return this.http.get<{balance: number}>(`${this.baseUrl}/accounts/${mapped.accountNo}/balance`).pipe(
+                  map((res) => ({ ...mapped, balance: typeof res.balance === 'number' ? res.balance : mapped.balance }) as User),
+                  catchError(() => of(mapped as User))
+                );
+              }
+              return of(mapped as User);
+            }),
+            map((finalUser) => {
+              localStorage.setItem('currentUser', JSON.stringify(finalUser));
+              this.currentUserSubject.next(finalUser);
               this.isLoggedInSubject.next(true);
-              return mapped as User;
+              return finalUser;
             }),
             catchError(() => {
               // If enrichment fails (e.g., no customer record yet), proceed with auth user
@@ -170,5 +190,14 @@ export class AuthService {
     const hasSpecial = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password);
     
     return minLength && hasUpper && hasNumber && hasSpecial;
+  }
+
+  // Update and persist current user (e.g., after transactions update balance)
+  updateCurrentUser(patch: Partial<User | Customer>): void {
+    const current = this.currentUserSubject.value;
+    if (!current) return;
+    const merged = { ...current, ...patch } as User;
+    localStorage.setItem('currentUser', JSON.stringify(merged));
+    this.currentUserSubject.next(merged);
   }
 }
