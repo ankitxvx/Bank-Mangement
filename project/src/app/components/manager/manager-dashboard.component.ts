@@ -449,6 +449,14 @@ import { Customer, Employee } from '../../models/user.model';
                 </div>
 
                 <div class="form-group">
+                  <label class="form-label">Status *</label>
+                  <select class="form-control" formControlName="isActive">
+                    <option [ngValue]="true">Active</option>
+                    <option [ngValue]="false">Inactive</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
                   <label class="form-label">Date of Birth</label>
                   <input type="date" class="form-control" formControlName="dateOfBirth">
                 </div>
@@ -790,7 +798,8 @@ export class ManagerDashboardComponent implements OnInit {
       email: ['', [Validators.required, Validators.email]],
       department: ['', Validators.required],
       dateOfBirth: [''],
-      address: ['']
+      address: [''],
+      isActive: [true]
     });
 
     this.customerSearchForm = this.fb.group({
@@ -822,6 +831,13 @@ export class ManagerDashboardComponent implements OnInit {
     this.employeeService.getEmployees(1, 1000).subscribe({
       next: (result) => {
         this.totalEmployees = result.total;
+        // If employees already loaded on another tab, keep list consistent when total > current length
+        if (this.employees.length && this.employees.length !== result.total) {
+          // Optionally refresh current page if discrepancy detected
+          if (this.employeeCurrentPage === 1) {
+            this.employees = result.employees.slice(0, this.employeePageSize);
+          }
+        }
       }
     });
   }
@@ -1051,7 +1067,8 @@ export class ManagerDashboardComponent implements OnInit {
         this.employees = result.employees;
         this.totalEmployees = result.total;
         this.employeeTotalPages = Math.ceil(this.totalEmployees / this.employeePageSize);
-        this.notificationService.showSuccess(`Loaded ${result.employees.length} employees`);
+        // Use total (all employees) rather than current page slice length to avoid confusing count (e.g., 8 shown when 10 exist)
+        this.notificationService.showSuccess(`Loaded ${this.totalEmployees} employees`);
       },
       error: (error) => {
         this.isLoading = false;
@@ -1062,6 +1079,8 @@ export class ManagerDashboardComponent implements OnInit {
 
   showEmployeeCreateForm(): void {
     this.employeeForm.reset();
+    // Ensure default active status when creating a new employee
+    this.employeeForm.patchValue({ isActive: true });
     this.showEmployeeCreate = true;
   }
 
@@ -1085,7 +1104,8 @@ export class ManagerDashboardComponent implements OnInit {
       email: employee.email,
       department: employee.department,
       dateOfBirth: employee.dateOfBirth ? this.formatDateForInput(employee.dateOfBirth) : '',
-      address: employee.address
+      address: employee.address,
+      isActive: employee.isActive
     });
     this.showEmployeeEdit = true;
   }

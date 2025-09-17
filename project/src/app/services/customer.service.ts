@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
-import { BehaviorSubject, Observable, of, throwError } from 'rxjs';
-import { map, switchMap, catchError } from 'rxjs/operators';
+import { BehaviorSubject, Observable, of, throwError, forkJoin } from 'rxjs';
+import { map, switchMap, catchError, tap } from 'rxjs/operators';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../environments';
 import { Customer, Transaction } from '../models/user.model';
@@ -83,13 +83,13 @@ export class CustomerService {
   getCustomers(page: number = 1, pageSize: number = 8): Observable<{customers: Customer[], total: number}> {
     return this.http.get<any[]>(`${this.baseUrl}/customers`).pipe(
       map(list => (list || []).map(c => this.mapBackendCustomer(c))),
-      map(customers => {
-        this.customersSubject.next(customers);
-        // Simple client-side paging to preserve existing component usage
+      switchMap(customers => this.hydrateBalances(customers)),
+      map(customersWithBalances => {
+        this.customersSubject.next(customersWithBalances);
         const startIndex = (page - 1) * pageSize;
         const endIndex = startIndex + pageSize;
-        const slice = (customers || []).slice(startIndex, endIndex);
-        return { customers: slice, total: (customers || []).length };
+        const slice = (customersWithBalances || []).slice(startIndex, endIndex);
+        return { customers: slice, total: (customersWithBalances || []).length };
       })
     );
   }
@@ -278,7 +278,9 @@ export class CustomerService {
           map((tx: any) => {
             const normalized = this.mapBackendTransaction(tx);
             const newBalance = normalized.balance || (cust.balance + amount);
-            return { customer: { ...cust, balance: newBalance } as Customer, transaction: normalized };
+            const updatedCustomer = { ...cust, balance: newBalance } as Customer;
+            this.patchCustomer(updatedCustomer);
+            return { customer: updatedCustomer, transaction: normalized };
           })
         );
       })
@@ -298,7 +300,9 @@ export class CustomerService {
           map((tx: any) => {
             const normalized = this.mapBackendTransaction(tx);
             const newBalance = normalized.balance || (cust.balance - amount);
-            return { customer: { ...cust, balance: newBalance } as Customer, transaction: normalized };
+            const updatedCustomer = { ...cust, balance: newBalance } as Customer;
+            this.patchCustomer(updatedCustomer);
+            return { customer: updatedCustomer, transaction: normalized };
           })
         );
       })
@@ -318,7 +322,9 @@ export class CustomerService {
           map((tx: any) => {
             const normalized = this.mapBackendTransaction(tx);
             const newBalance = normalized.balance || (fromCust.balance - amount);
-            return { fromCustomer: { ...fromCust, balance: newBalance } as Customer, transaction: normalized };
+            const updatedCustomer = { ...fromCust, balance: newBalance } as Customer;
+            this.patchCustomer(updatedCustomer);
+            return { fromCustomer: updatedCustomer, transaction: normalized };
           })
         );
       })
@@ -347,6 +353,48 @@ export class CustomerService {
         );
       }),
       catchError(() => of({ transactions: [], total: 0 }))
+    );
+  }
+
+  // --- New helpers for keeping balance in sync with account-service ---
+  private hydrateBalances(customers: Customer[]): Observable<Customer[]> {
+    if (!customers || customers.length === 0) return of(customers);
+    const requests = customers
+      .filter(c => !!c.accountNo)
+      .map(c => this.http.get<{balance: number}>(`${this.baseUrl}/accounts/${c.accountNo}/balance`).pipe(
+        map(res => ({ accountNo: c.accountNo, balance: typeof res.balance === 'number' ? res.balance : c.balance })),
+        catchError(() => of({ accountNo: c.accountNo, balance: c.balance }))
+      ));
+    if (requests.length === 0) return of(customers);
+    return forkJoin(requests).pipe(
+      map(results => {
+        const balanceMap = new Map(results.map(r => [r.accountNo, r.balance]));
+        return customers.map(c => balanceMap.has(c.accountNo) ? { ...c, balance: balanceMap.get(c.accountNo)! } : c);
+      })
+    );
+  }
+
+  private patchCustomer(updated: Customer): void {
+    const list = this.customersSubject.getValue();
+    const idx = list.findIndex(c => c.id === updated.id);
+    if (idx !== -1) {
+      const newList = [...list];
+      newList[idx] = updated;
+      this.customersSubject.next(newList);
+    }
+  }
+
+  refreshCustomerBalance(customerId: string): Observable<Customer | null> {
+    return this.getCustomerById(customerId).pipe(
+      switchMap(cust => {
+        if (!cust || !cust.accountNo) return of(cust);
+        return this.http.get<{balance: number}>(`${this.baseUrl}/accounts/${cust.accountNo}/balance`).pipe(
+          map(res => ({ ...cust, balance: res.balance } as Customer)),
+          catchError(() => of(cust))
+        );
+      }),
+      tap(updated => { if (updated) this.patchCustomer(updated); }),
+      catchError(() => of(null))
     );
   }
 }
